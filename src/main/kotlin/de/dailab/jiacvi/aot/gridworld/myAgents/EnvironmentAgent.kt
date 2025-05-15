@@ -11,7 +11,7 @@ import de.dailab.jiacvi.behaviour.act
  * */
 class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) {
     // TODO you might need to put some variables to save stuff here
-    var antIds = listOf("fouad", "dijar", "coolman")
+    val antIds = (1..40).map { "ant-$it" }
     var gridsize = Position(0, 0)
     var nestPosition = Position(0, 0)
     var obstacleList: List<Position>? = null
@@ -33,6 +33,7 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
         ){ response ->
             gridsize = response.size
             nestPosition = response.nestPosition
+            println("nestPosition: $nestPosition")
             obstacleList = response.obstacles
             for (ant in antIds) {
                 val antRef = system.resolve(ant)  // Get a reference to the ant agent
@@ -65,7 +66,10 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
         *   - adjust your parameters to get better results, i.e. amount of ants (capped at 40)
         */
 
+        on<EndGameMessage> { msg ->
 
+            println("total score = ${msg.score}, food collected = ${msg.foodCollected}/${msg.totalFood}")
+        }
         on<GameTurnInform> { msg ->
             for (ant in antIds) {
                 val antRef = system.resolve(ant)
@@ -77,7 +81,7 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
 
             when (msg.type) {
                 Pheromones.FOOD -> {
-                    updatePheromone(nestpheromones,msg.position, msg.strength)
+                    updatePheromone(foodpheromones,msg.position, msg.strength)
                 }
                 Pheromones.NEST -> {
                     updatePheromone(nestpheromones,msg.position,  msg.strength)
@@ -87,7 +91,7 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
         respond<GetSurrounding, GetSurroundingResponse> { msg ->
 
             //send response
-            return@respond GetSurroundingResponse(getPositionDirections(msg.position))
+            return@respond GetSurroundingResponse(getPositionDirections(msg.type,msg.position))
         }
 
     }
@@ -116,32 +120,38 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
             println("ERROR: Failed to update pheromone at (${position.x}, ${position.y}). Value is still $verifyValue")
         }
     }
-    fun getPositionDirections(position: Position): List<Pair<Pair<Position, Int>?, AntAction>> {
+    fun getPositionDirections(pheromoneType: Pheromones, position: Position): List<Pair<Pair<Position, Int>?, AntAction>> {
         val list = mutableListOf<Pair<Pair<Position, Int>?, AntAction>>()
 
         // Define all eight possible directions correctly
-        list.add(Pair(getPositionFromPheromone(Position(position.x, position.y + 1)), AntAction.NORTH))
-        list.add(Pair(getPositionFromPheromone(Position(position.x + 1, position.y + 1)), AntAction.NORTHEAST))
-        list.add(Pair(getPositionFromPheromone(Position(position.x + 1, position.y)), AntAction.EAST))
-        list.add(Pair(getPositionFromPheromone(Position(position.x + 1, position.y - 1)), AntAction.SOUTHEAST))
-        list.add(Pair(getPositionFromPheromone(Position(position.x, position.y - 1)), AntAction.SOUTH))
-        list.add(Pair(getPositionFromPheromone(Position(position.x - 1, position.y - 1)), AntAction.SOUTHWEST))
-        list.add(Pair(getPositionFromPheromone(Position(position.x - 1, position.y)), AntAction.WEST))
-        list.add(Pair(getPositionFromPheromone(Position(position.x - 1, position.y + 1)), AntAction.NORTHWEST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x, position.y + 1)), AntAction.NORTH))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x + 1, position.y + 1)), AntAction.NORTHEAST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x + 1, position.y)), AntAction.EAST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x + 1, position.y - 1)), AntAction.SOUTHEAST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x, position.y - 1)), AntAction.SOUTH))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x - 1, position.y - 1)), AntAction.SOUTHWEST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x - 1, position.y)), AntAction.WEST))
+        list.add(Pair(getPositionFromPheromone(pheromoneType,Position(position.x - 1, position.y + 1)), AntAction.NORTHWEST))
         return list
     }
-    fun getPositionFromPheromone(position: Position): Pair<Position, Int>? {
-        nestpheromones.let { pheromones ->
-            for (pheromone in pheromones) {
-
-                if (pheromone.first.x == position.x && pheromone.first.y == position.y) {
-
-                    println("fucking found")
-                    return Pair(pheromone.first, pheromone.second)
-                }
-            }
+    fun getPositionFromPheromone(pheromoneType: Pheromones, position: Position): Pair<Position, Int>? {
+        if (pheromoneType == Pheromones.FOOD){
+            return getPosition(foodpheromones, position)
+        }else{
+            return getPosition(nestpheromones, position)
         }
-        return null
+
     }
 }
+fun getPosition(pheromoneList: MutableList<Pair<Position, Int>>, position: Position): Pair<Position, Int>? {
+    pheromoneList.let { pheromones ->
+        for (pheromone in pheromones) {
 
+            if (pheromone.first.x == position.x && pheromone.first.y == position.y) {
+
+                return Pair(pheromone.first, pheromone.second)
+            }
+        }
+    }
+    return null
+}

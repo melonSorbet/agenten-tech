@@ -5,55 +5,152 @@ import de.dailab.jiacvi.AgentRef
 import de.dailab.jiacvi.aot.gridworld.*
 import de.dailab.jiacvi.behaviour.act
 import java.time.Duration
+import kotlin.math.exp
 
 /**
  * Stub for your AntAgent
  * */
-const val baseStrength: Int = 10;
+const val baseStrength: Int = 300 ;
 
 class AntAgent(private val antId: String) : Agent(overrideName = antId) {
     private var currentPosition: Position = Position(0, 0)
-    private var canPickUpFood = false
     private var lastAction: AntAction? = null
     private var gotFood = false
     private var positions: List<Pair<Pair<Position, Int>?, AntAction>> = emptyList();
+    private var nestPosition: Position = Position(0, 0)
+    private var currentStrength = baseStrength
+    private var stepsSincePheromoneReset = 0
+
+    private fun calculateCurrentStrength(): Int {
+        // Calculate a base value that decays more slowly
+        val strength = when {
+            gotFood -> baseStrength * 1.5.toInt() // 450 - Stronger food trail when returning with food
+            else -> (baseStrength * exp(-0.008 * stepsSincePheromoneReset)).toInt().coerceAtLeast(80)
+        }
+        stepsSincePheromoneReset++
+        return strength
+    }
+
     override fun behaviour() = act {
         on<CurrentPosition> { msg ->
             currentPosition = msg.position
-            println("Ant $antId initialized at $currentPosition")
+            val antRef = system.resolve("env")
+
+            nestPosition = msg.position
+            antRef tell DropPheromones(
+                Pheromones.NEST,
+                currentPosition,
+                9998888
+            )
         }
-        //ant trying to do their moves
         on<CurrentTurn> { msg ->
             val surroundingRef = system.resolve("env") as? AgentRef<GetSurrounding>
             val antRef = system.resolve("env")
             val server = system.resolve(SERVER_NAME) as? AgentRef<AntActionRequest>
-            val action = AntAction.TAKE
-            //drop pheromones
-            val pheromoneType = Pheromones.NEST
-            println("dropped pheromoneType $pheromoneType")
-            //position
 
-            surroundingRef?.ask<GetSurrounding, GetSurroundingResponse>(
-                GetSurrounding(pheromoneType,currentPosition)
-            ){ response ->
-                positions = response.positions
+            // Handle pending actions first
+            when (lastAction) {
+                AntAction.TAKE -> handleTakeAction()
+                else -> handleMovement(surroundingRef, antRef, server)
             }
-            val bestPair = chooseBestPosition()
+        }
 
+
+
+    }
+    private fun handleTakeAction(){
+        val antRef = system.resolve("env")
+        val server = system.resolve(SERVER_NAME) as? AgentRef<AntActionRequest>
+
+
+            // Complete the TAKE action before proceeding
             server?.ask<AntActionRequest, AntActionResponse>(
-                AntActionRequest(antId = antId, action = bestPair.second),
+                AntActionRequest(antId = antId, action = AntAction.TAKE)
             ) { response ->
 
-                if (response.state) {
-                    currentPosition = bestPair.first
-                }
-                //TODO: add lastMove check if there is Food to take then Take it Instead of moving
-                antRef tell DropPheromones(pheromoneType, currentPosition, baseStrength)
+                    gotFood = true
+                    lastAction = null
+                    currentStrength = baseStrength
+                    stepsSincePheromoneReset = 0
+                    antRef tell DropPheromones(
+                        if (!gotFood) Pheromones.NEST else Pheromones.FOOD,
+                        currentPosition,
+                        baseStrength
+                    )
 
-                println("this is the request response=${response.state}")
             }
+    }
+    private fun handleDropAction(){
+        val antRef = system.resolve("env")
+        val server = system.resolve(SERVER_NAME) as? AgentRef<AntActionRequest>
+
+        // Complete the TAKE action before proceeding
+        server?.ask<AntActionRequest, AntActionResponse>(
+            AntActionRequest(antId = antId, action = AntAction.DROP)
+        ) { response ->
 
 
+            gotFood = false
+            lastAction = null
+            currentStrength = baseStrength
+            stepsSincePheromoneReset = 0
+
+            antRef tell DropPheromones(
+                if (!gotFood) Pheromones.NEST else Pheromones.FOOD,
+                currentPosition,
+                baseStrength
+            )
+
+        }
+
+    }
+    private fun handleMovement(
+        surroundingRef: AgentRef<GetSurrounding>?,
+        antRef: AgentRef<*>?,
+        server: AgentRef<AntActionRequest>?
+    ) {
+        // Get surrounding info
+        surroundingRef?.ask<GetSurrounding, GetSurroundingResponse>(
+            GetSurrounding(if (gotFood) Pheromones.NEST else Pheromones.FOOD, currentPosition)
+        ) { response ->
+            positions = response.positions
+
+            // Choose best position
+            val bestPair = chooseBestPosition()
+
+
+            // Check for nest BEFORE moving (using currentPosition)
+            val atNestBeforeMove = nestPosition.x == currentPosition.x &&
+                    nestPosition.y == currentPosition.y
+            if(atNestBeforeMove && gotFood) {
+                handleDropAction()
+                return@ask
+            }
+            // Execute movement
+            server?.ask<AntActionRequest, AntActionResponse>(
+                AntActionRequest(antId = antId, action = bestPair.second)
+            ) { response ->
+                if (response.state) {
+                    // Update position after successful move
+                    currentPosition = bestPair.first
+
+                    // Handle food pickup (using response flag)
+                    if (response.flag == ActionFlag.HAS_FOOD && !gotFood) {
+                        lastAction = AntAction.TAKE
+                    }
+
+
+                }
+                currentStrength = calculateCurrentStrength()
+                // Always drop pheromones
+                system.resolve("env") tell(DropPheromones(
+                    if (gotFood) Pheromones.FOOD else Pheromones.NEST,
+                    currentPosition,
+                    currentStrength
+                ))
+
+
+            }
         }
     }
     private fun chooseBestPosition(): Pair<Position, AntAction> {
@@ -62,6 +159,7 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
 
         // If no valid positions, return a default
         if (validPositions.isEmpty()) {
+            println("empty")
             return Position(0, 0) to AntAction.NORTH
         }
 
@@ -77,20 +175,13 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
                     maxCandidates.clear()
                     maxCandidates.add(pheromonePair.first to action)
                 }
+
                 currentValue == maxValue -> {
                     maxCandidates.add(pheromonePair.first to action)
                 }
             }
         }
-
         // Return random if multiple max values, or the single best if unique
         return maxCandidates.random()
-    }
-
-
-
-    private fun isAtNest(): Boolean {
-        // You'll need to get the actual nest position from somewhere
-        return currentPosition == Position(0, 0) // Replace with actual nest position
     }
 }
