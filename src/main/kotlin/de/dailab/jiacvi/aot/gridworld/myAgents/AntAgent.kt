@@ -10,9 +10,10 @@ import kotlin.math.exp
 /**
  * Stub for your AntAgent
  * */
-const val baseStrength: Int = 300 ;
+const val baseStrength: Int = 100 ;
 
 class AntAgent(private val antId: String) : Agent(overrideName = antId) {
+    private var lastFailedPosition: Position? = null
     private var currentPosition: Position = Position(0, 0)
     private var lastAction: AntAction? = null
     private var gotFood = false
@@ -21,15 +22,10 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
     private var currentStrength = baseStrength
     private var stepsSincePheromoneReset = 0
 
-    private fun calculateCurrentStrength(): Int {
-        // Calculate a base value that decays more slowly
-        val strength = when {
-            gotFood -> baseStrength * 1.5.toInt() // 450 - Stronger food trail when returning with food
-            else -> (baseStrength * exp(-0.008 * stepsSincePheromoneReset)).toInt().coerceAtLeast(80)
-        }
-        stepsSincePheromoneReset++
-        return strength
+    private fun getCurrentStrength(): Int {
+        return (baseStrength * exp(-stepsSincePheromoneReset * 0.1)).toInt()
     }
+
 
     override fun behaviour() = act {
         on<CurrentPosition> { msg ->
@@ -45,13 +41,12 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
         }
         on<CurrentTurn> { msg ->
             val surroundingRef = system.resolve("env") as? AgentRef<GetSurrounding>
-            val antRef = system.resolve("env")
             val server = system.resolve(SERVER_NAME) as? AgentRef<AntActionRequest>
 
             // Handle pending actions first
             when (lastAction) {
                 AntAction.TAKE -> handleTakeAction()
-                else -> handleMovement(surroundingRef, antRef, server)
+                else -> handleMovement(surroundingRef,  server)
             }
         }
 
@@ -106,7 +101,6 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
     }
     private fun handleMovement(
         surroundingRef: AgentRef<GetSurrounding>?,
-        antRef: AgentRef<*>?,
         server: AgentRef<AntActionRequest>?
     ) {
         // Get surrounding info
@@ -130,6 +124,13 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
             server?.ask<AntActionRequest, AntActionResponse>(
                 AntActionRequest(antId = antId, action = bestPair.second)
             ) { response ->
+                if(response.flag == ActionFlag.OBSTACLE) {
+                    println("didnt work")
+                    lastFailedPosition = bestPair.first
+                    chooseBestPosition() // Retry the action
+                    return@ask
+                }
+
                 if (response.state) {
                     // Update position after successful move
                     currentPosition = bestPair.first
@@ -141,47 +142,61 @@ class AntAgent(private val antId: String) : Agent(overrideName = antId) {
 
 
                 }
-                currentStrength = calculateCurrentStrength()
+                stepsSincePheromoneReset++
+                currentStrength = getCurrentStrength()
                 // Always drop pheromones
                 system.resolve("env") tell(DropPheromones(
                     if (gotFood) Pheromones.FOOD else Pheromones.NEST,
                     currentPosition,
                     currentStrength
                 ))
-
-
             }
+
         }
     }
     private fun chooseBestPosition(): Pair<Position, AntAction> {
-        // Filter out null positions and unwrap the remaining ones
+
         val validPositions = positions.filter { it.first != null }
+            .mapNotNull { (pheromonePair, action) ->
+                pheromonePair?.let { it.first to action }
+            }
+            .filterNot { (position, _) ->
+                position == lastFailedPosition
+            }
 
         // If no valid positions, return a default
         if (validPositions.isEmpty()) {
-            println("empty")
+            lastFailedPosition = null // Reset since we have no options
             return Position(0, 0) to AntAction.NORTH
         }
 
-        // Find the maximum pheromone value manually
-        var maxValue = Int.MIN_VALUE
-        val maxCandidates = mutableListOf<Pair<Position, AntAction>>()
+        // Create a list of positions with their weights
+        val weightedChoices = mutableListOf<Triple<Position, AntAction, Int>>()
+        var totalWeight = 0
 
-        for ((pheromonePair, action) in validPositions) {
-            val currentValue = pheromonePair!!.second
-            when {
-                currentValue > maxValue -> {
-                    maxValue = currentValue
-                    maxCandidates.clear()
-                    maxCandidates.add(pheromonePair.first to action)
-                }
+        for ((position, action) in validPositions) {
+            // Find the pheromone value for this position
+            val pheromoneValue = positions.first { it.second == action }.first?.second ?: 0
+            val weight = if (pheromoneValue <= 0) 1 else pheromoneValue
 
-                currentValue == maxValue -> {
-                    maxCandidates.add(pheromonePair.first to action)
+            weightedChoices.add(Triple(position, action, weight))
+            totalWeight += weight
+        }
+
+        // Select randomly with weighting
+        if (totalWeight > 0) {
+            var random = (0 until totalWeight).random()
+            for ((position, action, weight) in weightedChoices) {
+                random -= weight
+                if (random < 0) {
+                    lastFailedPosition = null // Reset after successful selection
+                    return position to action
                 }
             }
         }
-        // Return random if multiple max values, or the single best if unique
-        return maxCandidates.random()
+
+        // Fallback to random selection if weighting failed
+        lastFailedPosition = null
+        return validPositions.random()
     }
 }

@@ -14,7 +14,7 @@ fun main() {
         enable(LocalBroker)
         agents {
             // you can set logGames=true, logFile="logs/<name>.log" here
-            add(ServerAgent(gridfile, 5,true,true,"logs/yourlog.log"))
+            add(ServerAgent(gridfile, 40,true,true,"logs/yourlog.log"))
 
             // this is your Agent but don't change the ID
             add(EnvironmentAgent("env"))

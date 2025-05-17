@@ -71,14 +71,20 @@ class EnvironmentAgent(private val envId: String) : Agent(overrideName = envId) 
             println("total score = ${msg.score}, food collected = ${msg.foodCollected}/${msg.totalFood}")
         }
         on<GameTurnInform> { msg ->
+            foodpheromones = foodpheromones.map { (pos, value) ->
+                pos to  (value * 0.30).toInt()
+            }.toMutableList()
+
+            nestpheromones = nestpheromones.map { (pos, value) ->
+                pos to (value * 0.90).toInt()
+            }.toMutableList()
+
             for (ant in antIds) {
                 val antRef = system.resolve(ant)
                 antRef tell CurrentTurn(msg.gameTurn)
             }
         }
         on<DropPheromones> { msg ->
-            println("Received DropPheromones message: ${msg.type} at position ${msg.position}")
-
             when (msg.type) {
                 Pheromones.FOOD -> {
                     updatePheromone(foodpheromones,msg.position, msg.strength)
